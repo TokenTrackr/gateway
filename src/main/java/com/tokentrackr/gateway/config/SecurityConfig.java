@@ -1,68 +1,65 @@
 package com.tokentrackr.gateway.config;
 
-import org.springframework.beans.factory.annotation.Value;
+import java.time.Duration;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
-import org.springframework.security.oauth2.client.oidc.web.server.logout.OidcClientInitiatedServerLogoutSuccessHandler;
-import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository;
 import org.springframework.security.web.server.SecurityWebFilterChain;
-import org.springframework.security.web.server.authentication.logout.ServerLogoutSuccessHandler;
-import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsConfigurationSource;
-import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+import org.springframework.security.web.server.header.XFrameOptionsServerHttpHeadersWriter.Mode;
 
-import java.util.Arrays;
+import static org.springframework.security.config.Customizer.withDefaults;
 
 @Configuration
 @EnableWebFluxSecurity
 public class SecurityConfig {
-    @Value("${app.frontend.url}")
-    private String frontendUrl;
+
+    private final CorsConfigurationSource corsSource;
+
+    public SecurityConfig(CorsConfigurationSource corsSource) {
+        this.corsSource = corsSource;
+    }
 
     @Bean
-    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http,
-                                                            ReactiveClientRegistrationRepository clientRegistrationRepository) {
-        // Configure logout handler
-        ServerLogoutSuccessHandler logoutSuccessHandler =
-                new OidcClientInitiatedServerLogoutSuccessHandler(clientRegistrationRepository);
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        http
+                // CORS
+                .cors(cors -> cors.configurationSource(corsSource))
 
-        return http
+                // disable CSRF
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
-                .cors(corsSpec -> corsSpec.configurationSource(corsConfigurationSource()))
+
+                // security headers
+                .headers(headers -> headers
+                        .hsts(hsts -> hsts
+                                .includeSubdomains(true)
+                                .maxAge(Duration.ofDays(365))
+                                .preload(false)
+                        )
+                        .contentTypeOptions(withDefaults())
+                        .frameOptions(frame -> frame.mode(Mode.SAMEORIGIN))
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives("default-src 'self'; script-src 'self'; object-src 'none';")
+                        )
+                )
+
+                // route authorization
                 .authorizeExchange(exchanges -> exchanges
-                        .pathMatchers("/actuator/**", "/favicon.ico").permitAll()
-                        .pathMatchers("/logout").authenticated()
-                        .pathMatchers("/auth/**").permitAll()
+                        .pathMatchers("/login/**", "/oauth2/**", "/actuator/health").permitAll()
+                        .pathMatchers("/user/**").hasAuthority("USER")
+                        .pathMatchers("/admin/**").hasAuthority("ADMIN")
                         .anyExchange().authenticated()
                 )
-                .oauth2Login(oauth2 -> oauth2
-                        .authenticationSuccessHandler((webFilterExchange, authentication) -> {
-                            webFilterExchange.getExchange().getResponse()
-                                    .getHeaders().add("Location", frontendUrl);
-                            webFilterExchange.getExchange().getResponse().setStatusCode(org.springframework.http.HttpStatus.FOUND);
-                            return webFilterExchange.getExchange().getResponse().setComplete();
-                        })
-                )
-                .logout(logout -> logout
-                        .logoutUrl("/logout")
-                        .logoutSuccessHandler(logoutSuccessHandler)
-                )
-                .build();
-    }
 
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList(frontendUrl));
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(Arrays.asList("authorization", "content-type", "x-auth-token"));
-        configuration.setAllowCredentials(true);
+                // enable OAuth2 Login (redirect to Keycloak)
+                .oauth2Client(withDefaults())
+                .oauth2Login(withDefaults())
 
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
+                // JWT Resource Server (validate Bearer tokens)
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(withDefaults()));
+
+        return http.build();
     }
 }
-// This configuration class sets up security for the Spring WebFlux application.
